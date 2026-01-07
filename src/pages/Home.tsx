@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { getTrendingPosts, ProductHuntPost } from '../services/productHunt';
+import { useState, useEffect, type FormEvent } from 'react';
+import { getTrendingPosts, type ProductHuntPost } from '../services/productHunt';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { generateBrazilAdaptation } from '../services/openai';
@@ -32,7 +32,40 @@ export default function Home() {
     fetchPosts();
   }, []);
   
-  // ... (handlers remain same)
+  const handleAdaptation = async (post: ProductHuntPost) => {
+    try {
+      setAdaptingId(post.id);
+      const adaptation = await generateBrazilAdaptation(post.name, post.description);
+      setAdaptations(prev => ({ ...prev, [post.id]: adaptation }));
+    } catch (error) {
+      console.error("Failed to generate adaptation", error);
+      alert("Erro ao gerar adaptação. Tente novamente.");
+    } finally {
+      setAdaptingId(null);
+    }
+  };
+
+  const handleSave = async (post: ProductHuntPost) => {
+    if (!user) {
+      setAuthModalOpen(true);
+      return;
+    }
+
+    try {
+      const { error } = await supabase.from('saved_ideas').insert({
+        user_id: user.id,
+        product_name: post.name,
+        product_data: post,
+        notes: adaptations[post.id] ?? null,
+      });
+
+      if (error) throw error;
+      alert("Ideia salva!");
+    } catch (error) {
+      console.error("Failed to save idea", error);
+      alert("Erro ao salvar ideia. Verifique sua tabela no Supabase e tente novamente.");
+    }
+  };
 
   return (
     <div className="min-h-screen bg-background p-8">
@@ -141,7 +174,7 @@ function AuthModal({ onClose }: { onClose: () => void }) {
   const { signIn, signUp } = useAuth();
   const [error, setError] = useState("");
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setError("");
     let res;
