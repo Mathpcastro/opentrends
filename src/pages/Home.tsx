@@ -2,11 +2,12 @@ import { useState, useEffect, type FormEvent } from 'react';
 import { getTrendingPosts, type ProductHuntPost } from '../services/productHunt';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
-import { generateBrazilAdaptation } from '../services/openai';
+import { generateBrazilAdaptation, translateToPortuguese, type TranslatedContent } from '../services/openai';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
-import { Loader2, Bookmark, ExternalLink, Zap } from 'lucide-react';
+import { Loader2, Bookmark, ExternalLink, Zap, Languages, X } from 'lucide-react';
 import { Input } from '../components/ui/input';
+import ReactMarkdown from 'react-markdown';
 
 import { Link } from 'react-router-dom';
 
@@ -16,6 +17,9 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [adaptingId, setAdaptingId] = useState<string | null>(null);
   const [adaptations, setAdaptations] = useState<Record<string, string>>({});
+  const [translations, setTranslations] = useState<Record<string, TranslatedContent>>({});
+  const [translatingId, setTranslatingId] = useState<string | null>(null);
+  const [adaptationModalOpen, setAdaptationModalOpen] = useState<string | null>(null); // ID do post com modal aberto
   const { user, signOut } = useAuth();
   const [authModalOpen, setAuthModalOpen] = useState(false); // Simple toggle for now
 
@@ -45,6 +49,21 @@ export default function Home() {
       alert("Erro ao gerar adaptação. Tente novamente.");
     } finally {
       setAdaptingId(null);
+    }
+  };
+
+  const handleTranslate = async (post: ProductHuntPost) => {
+    if (translations[post.id]) return; // Já traduzido
+
+    try {
+      setTranslatingId(post.id);
+      const translated = await translateToPortuguese(post.name, post.tagline, post.description);
+      setTranslations(prev => ({ ...prev, [post.id]: translated }));
+    } catch (error) {
+      console.error("Failed to translate", error);
+      alert("Erro ao traduzir. Tente novamente.");
+    } finally {
+      setTranslatingId(null);
     }
   };
 
@@ -120,12 +139,32 @@ export default function Home() {
               </div>
               <CardHeader>
                 <CardTitle className="flex justify-between items-start">
-                  <span>{post.name}</span>
+                  <span>{translations[post.id]?.name || post.name}</span>
+                  {!translations[post.id] && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-6 w-6"
+                      onClick={() => handleTranslate(post)}
+                      disabled={translatingId === post.id}
+                      title="Traduzir para português"
+                    >
+                      {translatingId === post.id ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <Languages className="h-3 w-3" />
+                      )}
+                    </Button>
+                  )}
                 </CardTitle>
-                <CardDescription className="line-clamp-2">{post.tagline}</CardDescription>
+                <CardDescription className="line-clamp-2">
+                  {translations[post.id]?.tagline || post.tagline}
+                </CardDescription>
               </CardHeader>
               <CardContent className="flex-1">
-                <p className="text-sm text-secondary mb-4 line-clamp-3">{post.description}</p>
+                <p className="text-sm text-secondary mb-4 line-clamp-3">
+                  {translations[post.id]?.description || post.description}
+                </p>
                 
                 <div className="flex flex-wrap gap-2 mb-4">
                   {post.topics.edges.map(({ node }: any) => (
@@ -135,27 +174,37 @@ export default function Home() {
                   ))}
                 </div>
 
-                {adaptations[post.id] && (
-                  <div className="bg-surface/50 p-3 rounded-md border border-border mt-4 text-sm text-gray-300">
-                    <h4 className="font-semibold text-accent mb-1 flex items-center gap-2">
-                      <Zap size={14} /> Adaptação Brasil
-                    </h4>
-                    <div className="whitespace-pre-wrap text-xs leading-relaxed">
-                      {adaptations[post.id]}
-                    </div>
-                  </div>
-                )}
               </CardContent>
               <CardFooter className="flex justify-between gap-2 border-t border-border pt-4">
                  <Button 
                    variant="ghost" 
                    size="sm" 
                    className="flex-1"
-                   onClick={() => handleAdaptation(post)}
-                   disabled={!!adaptations[post.id] || adaptingId === post.id}
+                   onClick={() => {
+                     if (adaptations[post.id]) {
+                       setAdaptationModalOpen(post.id);
+                     } else {
+                       handleAdaptation(post);
+                     }
+                   }}
+                   disabled={adaptingId === post.id}
                  >
-                   {adaptingId === post.id ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Zap className="mr-2 h-4 w-4" />}
-                   {adaptations[post.id] ? "Gerado" : "Adaptar BR"}
+                   {adaptingId === post.id ? (
+                     <>
+                       <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                       Gerando...
+                     </>
+                   ) : adaptations[post.id] ? (
+                     <>
+                       <Zap className="mr-2 h-4 w-4" />
+                       Ver adaptação
+                     </>
+                   ) : (
+                     <>
+                       <Zap className="mr-2 h-4 w-4" />
+                       Adaptar BR
+                     </>
+                   )}
                  </Button>
                  
                  <Button variant="secondary" size="icon" onClick={() => handleSave(post)}>
@@ -177,6 +226,78 @@ export default function Home() {
       {authModalOpen && !user && (
          <AuthModal onClose={() => setAuthModalOpen(false)} />
       )}
+
+      {/* Adaptation Modal */}
+      {adaptationModalOpen && adaptations[adaptationModalOpen] && (
+        <AdaptationModal
+          productName={posts.find(p => p.id === adaptationModalOpen)?.name || ''}
+          adaptation={adaptations[adaptationModalOpen]}
+          onClose={() => setAdaptationModalOpen(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function AdaptationModal({ 
+  productName, 
+  adaptation, 
+  onClose 
+}: { 
+  productName: string; 
+  adaptation: string; 
+  onClose: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-4">
+      <div className="w-full max-w-3xl max-h-[90vh] bg-background border border-border rounded-lg shadow-xl flex flex-col">
+        <div className="flex items-center justify-between p-6 border-b border-border">
+          <div className="flex items-center gap-3">
+            <Zap className="h-5 w-5 text-accent" />
+            <div>
+              <h2 className="text-2xl font-bold text-primary">Adaptação Brasil</h2>
+              <p className="text-sm text-secondary">{productName}</p>
+            </div>
+          </div>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={onClose}
+            className="h-8 w-8"
+          >
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+        
+        <div className="flex-1 overflow-y-auto p-6">
+          <div className="prose prose-invert prose-sm max-w-none">
+            <ReactMarkdown
+              components={{
+                h1: ({ children }) => <h1 className="text-2xl font-bold text-primary mb-4 mt-6 first:mt-0">{children}</h1>,
+                h2: ({ children }) => <h2 className="text-xl font-semibold text-primary mb-3 mt-5">{children}</h2>,
+                h3: ({ children }) => <h3 className="text-lg font-semibold text-accent mb-2 mt-4">{children}</h3>,
+                h4: ({ children }) => <h4 className="text-base font-semibold text-accent mb-2 mt-3">{children}</h4>,
+                p: ({ children }) => <p className="text-secondary mb-4 leading-relaxed">{children}</p>,
+                ul: ({ children }) => <ul className="list-disc list-outside mb-4 ml-6 space-y-2 text-secondary">{children}</ul>,
+                ol: ({ children }) => <ol className="list-decimal list-outside mb-4 ml-6 space-y-2 text-secondary">{children}</ol>,
+                li: ({ children }) => <li className="mb-1">{children}</li>,
+                strong: ({ children }) => <strong className="font-semibold text-primary">{children}</strong>,
+                em: ({ children }) => <em className="italic text-secondary">{children}</em>,
+                code: ({ children }) => <code className="bg-surface px-1.5 py-0.5 rounded text-xs text-accent font-mono">{children}</code>,
+                blockquote: ({ children }) => <blockquote className="border-l-4 border-accent pl-4 italic text-secondary my-4">{children}</blockquote>,
+              }}
+            >
+              {adaptation}
+            </ReactMarkdown>
+          </div>
+        </div>
+
+        <div className="p-6 border-t border-border">
+          <Button variant="outline" className="w-full" onClick={onClose}>
+            Fechar
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }

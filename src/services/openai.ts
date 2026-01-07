@@ -38,3 +38,57 @@ export const generateBrazilAdaptation = async (productName: string, productDescr
   }
 };
 
+export interface TranslatedContent {
+  name: string;
+  tagline: string;
+  description: string;
+}
+
+export const translateToPortuguese = async (
+  name: string,
+  tagline: string,
+  description: string
+): Promise<TranslatedContent> => {
+  if (!openai) {
+    return { name, tagline, description }; // Retorna original se não houver OpenAI
+  }
+
+  try {
+    const prompt = `
+Traduza o seguinte conteúdo de um produto SaaS do inglês para português brasileiro (pt-BR).
+Mantenha o tom profissional e técnico. Preserve nomes próprios, marcas e termos técnicos quando apropriado.
+
+Nome do produto: "${name}"
+Tagline: "${tagline}"
+Descrição: "${description}"
+
+Responda APENAS com um JSON válido no seguinte formato:
+{
+  "name": "nome traduzido",
+  "tagline": "tagline traduzida",
+  "description": "descrição traduzida"
+}
+
+Não adicione texto adicional, apenas o JSON.
+`;
+
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [{ role: "user", content: prompt }],
+      max_tokens: 500,
+      response_format: { type: "json_object" },
+    });
+
+    const translated = JSON.parse(response.choices[0].message.content || "{}");
+    
+    return {
+      name: translated.name || name,
+      tagline: translated.tagline || tagline,
+      description: translated.description || description,
+    };
+  } catch (error) {
+    console.error("Error translating content:", error);
+    return { name, tagline, description }; // Retorna original em caso de erro
+  }
+};
+

@@ -1,14 +1,3 @@
-import { GraphQLClient, gql } from 'graphql-request';
-
-const PH_API_ENDPOINT = 'https://api.producthunt.com/v2/api/graphql';
-const PH_TOKEN = import.meta.env.VITE_PRODUCT_HUNT_TOKEN;
-
-const client = new GraphQLClient(PH_API_ENDPOINT, {
-  headers: {
-    Authorization: `Bearer ${PH_TOKEN}`,
-  },
-});
-
 export interface ProductHuntPost {
   id: string;
   name: string;
@@ -29,40 +18,26 @@ export interface ProductHuntPost {
   };
 }
 
-export const GET_POSTS_QUERY = gql`
-  query GetPosts($first: Int!, $after: String) {
-    posts(first: $first, after: $after, order: VOTES) {
-      edges {
-        node {
-          id
-          name
-          tagline
-          description
-          url
-          votesCount
-          thumbnail {
-            url
-          }
-          website
-          topics(first: 3) {
-            edges {
-              node {
-                name
-              }
-            }
-          }
-        }
-        cursor
-      }
-      pageInfo {
-        hasNextPage
-        endCursor
-      }
-    }
-  }
-`;
-
+// Chama nossa API route serverless que faz a autenticação OAuth
 export const getTrendingPosts = async (first: number = 20, after?: string) => {
-  return client.request<any>(GET_POSTS_QUERY, { first, after });
+  const params = new URLSearchParams();
+  params.set('first', first.toString());
+  if (after) {
+    params.set('after', after);
+  }
+
+  // Em produção, usa a API route da Vercel. Em dev, pode usar localhost se rodar vercel dev
+  const apiUrl = import.meta.env.PROD 
+    ? '/api/producthunt' 
+    : import.meta.env.VITE_API_URL || '/api/producthunt';
+
+  const response = await fetch(`${apiUrl}?${params.toString()}`);
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ error: 'Erro desconhecido' }));
+    throw new Error(error.message || error.error || `HTTP ${response.status}`);
+  }
+
+  return response.json();
 };
 
