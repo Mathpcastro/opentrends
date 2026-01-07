@@ -13,6 +13,7 @@ import { Link } from 'react-router-dom';
 export default function Home() {
   const [posts, setPosts] = useState<ProductHuntPost[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [adaptingId, setAdaptingId] = useState<string | null>(null);
   const [adaptations, setAdaptations] = useState<Record<string, string>>({});
   const { user, signOut } = useAuth();
@@ -23,8 +24,10 @@ export default function Home() {
       try {
         const data = await getTrendingPosts();
         setPosts(data.posts.edges.map((edge: any) => edge.node));
-      } catch (error) {
+        setError(null);
+      } catch (error: any) {
         console.error("Failed to fetch posts", error);
+        setError("Erro ao carregar tendências. Verifique se a API Key do Product Hunt está configurada corretamente.");
       } finally {
         setLoading(false);
       }
@@ -92,6 +95,17 @@ export default function Home() {
         {loading ? (
           <div className="col-span-full flex justify-center py-20">
             <Loader2 className="h-10 w-10 animate-spin text-accent" />
+          </div>
+        ) : error ? (
+          <div className="col-span-full flex flex-col items-center justify-center py-20">
+            <p className="text-red-500 mb-4">{error}</p>
+            <Button variant="outline" onClick={() => window.location.reload()}>
+              Tentar novamente
+            </Button>
+          </div>
+        ) : posts.length === 0 ? (
+          <div className="col-span-full text-center py-20 text-secondary">
+            <p>Nenhuma tendência encontrada.</p>
           </div>
         ) : (
           posts.map(post => (
