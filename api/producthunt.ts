@@ -15,38 +15,45 @@ type VercelResponse = {
 
 const PH_API_ENDPOINT = 'https://api.producthunt.com/v2/api/graphql';
 
-const GET_POSTS_QUERY = gql`
-  query GetPosts($first: Int!, $after: String) {
-    posts(first: $first, after: $after, order: VOTES) {
-      edges {
-        node {
-          id
-          name
-          tagline
-          description
-          url
-          votesCount
-          thumbnail {
+const ALLOWED_ORDERS = ['VOTES'] as const;
+type AllowedOrder = (typeof ALLOWED_ORDERS)[number];
+
+function getPostsQuery(order: AllowedOrder) {
+  // `order` é enum no GraphQL, então precisa entrar sem aspas.
+  // Mantemos allowlist pra evitar injection.
+  return gql`
+    query GetPosts($first: Int!, $after: String) {
+      posts(first: $first, after: $after, order: ${order}) {
+        edges {
+          node {
+            id
+            name
+            tagline
+            description
             url
-          }
-          website
-          topics(first: 3) {
-            edges {
-              node {
-                name
+            votesCount
+            thumbnail {
+              url
+            }
+            website
+            topics(first: 3) {
+              edges {
+                node {
+                  name
+                }
               }
             }
           }
+          cursor
         }
-        cursor
-      }
-      pageInfo {
-        hasNextPage
-        endCursor
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
       }
     }
-  }
-`;
+  `;
+}
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // CORS headers para permitir requisições do frontend
@@ -82,8 +89,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const first = parseInt(req.query.first as string) || 20;
     const after = req.query.after as string | undefined;
+    const orderRaw = (req.query.order || 'VOTES').toUpperCase();
+    const order: AllowedOrder = (ALLOWED_ORDERS as readonly string[]).includes(orderRaw)
+      ? (orderRaw as AllowedOrder)
+      : 'VOTES';
 
-    const data = await client.request(GET_POSTS_QUERY, { first, after });
+    const data = await client.request(getPostsQuery(order), { first, after });
 
     return res.status(200).json(data);
   } catch (error: any) {

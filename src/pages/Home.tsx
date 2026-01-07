@@ -1,11 +1,11 @@
-import { useState, useEffect, type FormEvent } from 'react';
-import { getTrendingPosts, type ProductHuntPost } from '../services/productHunt';
+import { useState, useEffect, useMemo, type FormEvent } from 'react';
+import { getTrendingPosts, type ProductHuntPost, type PostsOrder } from '../services/productHunt';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '../components/ui/card';
 import { Button } from '../components/ui/button';
 import { generateBrazilAdaptation, translateToPortuguese, type TranslatedContent } from '../services/openai';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
-import { Loader2, Bookmark, ExternalLink, Zap, Languages, X } from 'lucide-react';
+import { Loader2, Bookmark, ExternalLink, Zap, Languages, X, TrendingUp, BarChart3 } from 'lucide-react';
 import { Input } from '../components/ui/input';
 import ReactMarkdown from 'react-markdown';
 
@@ -15,6 +15,7 @@ export default function Home() {
   const [posts, setPosts] = useState<ProductHuntPost[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null);
   const [adaptingId, setAdaptingId] = useState<string | null>(null);
   const [adaptations, setAdaptations] = useState<Record<string, string>>({});
   const [translations, setTranslations] = useState<Record<string, TranslatedContent>>({});
@@ -22,22 +23,130 @@ export default function Home() {
   const [adaptationModalOpen, setAdaptationModalOpen] = useState<string | null>(null); // ID do post com modal aberto
   const { user, signOut } = useAuth();
   const [authModalOpen, setAuthModalOpen] = useState(false); // Simple toggle for now
+  const [selectedFilter, setSelectedFilter] = useState<'most_voted' | 'vote_growth' | 'vote_velocity'>('most_voted');
+  const [previousSnapshot, setPreviousSnapshot] = useState<{ timestamp: number; posts: ProductHuntPost[] } | null>(null);
 
   useEffect(() => {
-    async function fetchPosts() {
+    const CACHE_DURATION = 24 * 60 * 60 * 1000; // 24 horas em milissegundos
+
+    const getCacheKey = (filter: string) => `producthunt_posts_cache_${filter}`;
+    const getPrevCacheKey = (filter: string) => `producthunt_posts_cache_prev_${filter}`;
+
+    const loadSnapshot = (key: string) => {
+      const raw = localStorage.getItem(key);
+      if (!raw) return null;
       try {
-        const data = await getTrendingPosts();
-        setPosts(data.posts.edges.map((edge: any) => edge.node));
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed.timestamp !== 'number' || !Array.isArray(parsed.posts)) return null;
+        return parsed as { timestamp: number; posts: ProductHuntPost[] };
+      } catch {
+        return null;
+      }
+    };
+
+    const saveSnapshot = (key: string, snapshot: { timestamp: number; posts: ProductHuntPost[] }) => {
+      localStorage.setItem(key, JSON.stringify(snapshot));
+    };
+
+    async function fetchPostsForFilter(filter: typeof selectedFilter) {
+      try {
+        setLoading(true);
+
+        const cacheKey = getCacheKey(filter);
+        const prevKey = getPrevCacheKey(filter);
+
+        const cached = loadSnapshot(cacheKey);
+        const prev = loadSnapshot(prevKey);
+
+        // Se passou menos de 24 horas, usa o cache
+        if (cached) {
+          const now = Date.now();
+          const timeDiff = now - cached.timestamp;
+          if (timeDiff < CACHE_DURATION) {
+            setPosts(cached.posts);
+            setPreviousSnapshot(prev);
+            setLastUpdatedAt(cached.timestamp);
+            setError(null);
+            return;
+          }
+        }
+
+        // Se não há cache válido, busca novos posts
+        const order: PostsOrder = 'VOTES';
+        const data = await getTrendingPosts({ order });
+        const postsData = data.posts.edges.map((edge: any) => edge.node);
+
+        const nowTs = Date.now();
+        const nextSnapshot = { timestamp: nowTs, posts: postsData };
+
+        // Mantém snapshot anterior para calcular crescimento
+        if (cached) {
+          saveSnapshot(prevKey, cached);
+          setPreviousSnapshot(cached);
+        } else {
+          setPreviousSnapshot(prev);
+        }
+
+        saveSnapshot(cacheKey, nextSnapshot);
+        setLastUpdatedAt(nowTs);
+        setPosts(postsData);
         setError(null);
       } catch (error: any) {
         console.error("Failed to fetch posts", error);
-        setError("Erro ao carregar tendências. Verifique se a API Key do Product Hunt está configurada corretamente.");
+
+        // Em caso de erro, tenta usar cache mesmo que expirado
+        const cacheKey = getCacheKey(filter);
+        const prevKey = getPrevCacheKey(filter);
+        const cached = loadSnapshot(cacheKey);
+        const prev = loadSnapshot(prevKey);
+
+        if (cached) {
+          setPosts(cached.posts);
+          setPreviousSnapshot(prev);
+          setLastUpdatedAt(cached.timestamp);
+          setError("Usando dados em cache. Erro ao buscar novas tendências.");
+        } else {
+          setError("Erro ao carregar tendências. Verifique se o Developer Token do Product Hunt está configurado corretamente.");
+        }
       } finally {
         setLoading(false);
       }
     }
-    fetchPosts();
-  }, []);
+    
+    fetchPostsForFilter(selectedFilter);
+  }, [selectedFilter]);
+
+  const derived = useMemo(() => {
+    const prevPosts = previousSnapshot?.posts || [];
+    const prevTs = previousSnapshot?.timestamp ?? null;
+    const curTs = lastUpdatedAt ?? null;
+
+    const prevVotesById = new Map<string, number>();
+    for (const p of prevPosts) {
+      prevVotesById.set(p.id, p.votesCount);
+    }
+
+    const hours = prevTs && curTs ? Math.max((curTs - prevTs) / 3600000, 0.01) : null;
+
+    const enriched = posts.map((p) => {
+      const prevVotes = prevVotesById.get(p.id);
+      const deltaVotes = typeof prevVotes === 'number' ? p.votesCount - prevVotes : 0;
+      const votesPerHour = hours ? deltaVotes / hours : 0;
+
+      return { post: p, deltaVotes, votesPerHour, hasHistory: !!hours };
+    });
+
+    const sorted = [...enriched];
+    if (selectedFilter === 'most_voted') {
+      sorted.sort((a, b) => b.post.votesCount - a.post.votesCount);
+    } else if (selectedFilter === 'vote_growth') {
+      sorted.sort((a, b) => (b.deltaVotes - a.deltaVotes) || (b.post.votesCount - a.post.votesCount));
+    } else {
+      sorted.sort((a, b) => (b.votesPerHour - a.votesPerHour) || (b.deltaVotes - a.deltaVotes) || (b.post.votesCount - a.post.votesCount));
+    }
+
+    return { items: sorted, hasHistory: !!hours, hours: hours ?? 0 };
+  }, [posts, previousSnapshot, lastUpdatedAt, selectedFilter]);
   
   const handleAdaptation = async (post: ProductHuntPost) => {
     try {
@@ -111,6 +220,48 @@ export default function Home() {
         </div>
       </header>
 
+      <section className="max-w-7xl mx-auto mb-6">
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            variant={selectedFilter === 'most_voted' ? 'secondary' : 'outline'}
+            size="sm"
+            onClick={() => setSelectedFilter('most_voted')}
+          >
+            <BarChart3 className="mr-2 h-4 w-4" />
+            Mais votados
+          </Button>
+          <Button
+            variant={selectedFilter === 'vote_growth' ? 'secondary' : 'outline'}
+            size="sm"
+            onClick={() => setSelectedFilter('vote_growth')}
+          >
+            <TrendingUp className="mr-2 h-4 w-4" />
+            Maior crescimento de votos
+          </Button>
+          <Button
+            variant={selectedFilter === 'vote_velocity' ? 'secondary' : 'outline'}
+            size="sm"
+            onClick={() => setSelectedFilter('vote_velocity')}
+          >
+            <TrendingUp className="mr-2 h-4 w-4" />
+            Mais crescendo (votos/h)
+          </Button>
+        </div>
+
+        <div className="mt-2 flex flex-col gap-1">
+          {lastUpdatedAt && (
+            <p className="text-xs text-secondary">
+              Atualizado em {new Date(lastUpdatedAt).toLocaleString('pt-BR')}
+            </p>
+          )}
+          {selectedFilter !== 'most_voted' && !derived.hasHistory && (
+            <p className="text-xs text-secondary">
+              Sem histórico ainda para calcular crescimento. Volte amanhã para ver a variação desde a última coleta.
+            </p>
+          )}
+        </div>
+      </section>
+
       <main className="max-w-7xl mx-auto grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {loading ? (
           <div className="col-span-full flex justify-center py-20">
@@ -123,12 +274,12 @@ export default function Home() {
               Tentar novamente
             </Button>
           </div>
-        ) : posts.length === 0 ? (
+        ) : derived.items.length === 0 ? (
           <div className="col-span-full text-center py-20 text-secondary">
             <p>Nenhuma tendência encontrada.</p>
           </div>
         ) : (
-          posts.map(post => (
+          derived.items.map(({ post, deltaVotes, votesPerHour }) => (
             <Card key={post.id} className="flex flex-col h-full hover:border-accent/50 transition-colors">
               <div className="h-48 relative overflow-hidden rounded-t-lg bg-surface">
                 {post.thumbnail?.url && (
@@ -137,6 +288,16 @@ export default function Home() {
                 <div className="absolute top-2 right-2 bg-black/50 backdrop-blur px-2 py-1 rounded text-xs text-white">
                   ▲ {post.votesCount}
                 </div>
+                {selectedFilter === 'vote_growth' && derived.hasHistory && (
+                  <div className="absolute top-2 left-2 bg-accent/20 border border-accent/30 backdrop-blur px-2 py-1 rounded text-xs text-accent">
+                    +{Math.max(deltaVotes, 0)}
+                  </div>
+                )}
+                {selectedFilter === 'vote_velocity' && derived.hasHistory && (
+                  <div className="absolute top-2 left-2 bg-accent/20 border border-accent/30 backdrop-blur px-2 py-1 rounded text-xs text-accent">
+                    +{Math.max(deltaVotes, 0)} ({Math.max(votesPerHour, 0).toFixed(1)}/h)
+                  </div>
+                )}
               </div>
               <CardHeader>
                 <CardTitle className="flex justify-between items-start">
