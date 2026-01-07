@@ -76,6 +76,7 @@ export default function Home() {
     try {
       const { error } = await supabase.from('saved_ideas').insert({
         user_id: user.id,
+        product_hunt_id: post.id, // ID do Product Hunt (obrigatório)
         product_name: post.name,
         product_data: post,
         notes: adaptations[post.id] ?? null,
